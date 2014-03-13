@@ -1,0 +1,231 @@
+diff -uNr linux-3.12.5/fs/buffer.c linux-3.12.5-lynus-modi/fs/buffer.c
+--- linux-3.12.5/fs/buffer.c	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/fs/buffer.c	2014-03-13 23:51:57.327950572 +0800
+@@ -2189,6 +2189,9 @@
+ 				err = get_block(inode, iblock, bh, 0);
+ 				if (err)
+ 					SetPageError(page);
++				/* Lingyu */
++				page->blocknr = err?0:bh->b_blocknr;
++				/* Lingyu */
+ 			}
+ 			if (!buffer_mapped(bh)) {
+ 				zero_user(page, i * blocksize, blocksize);
+diff -uNr linux-3.12.5/fs/Makefile linux-3.12.5-lynus-modi/fs/Makefile
+--- linux-3.12.5/fs/Makefile	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/fs/Makefile	2014-03-13 23:20:13.324070336 +0800
+@@ -126,3 +126,6 @@
+ obj-$(CONFIG_CEPH_FS)		+= ceph/
+ obj-$(CONFIG_PSTORE)		+= pstore/
+ obj-$(CONFIG_EFIVAR_FS)		+= efivarfs/
++#/* Lingyu */
++obj-y				+= trace_bdev.o
++#/* Lingyu */
+diff -uNr linux-3.12.5/fs/mpage.c linux-3.12.5-lynus-modi/fs/mpage.c
+--- linux-3.12.5/fs/mpage.c	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/fs/mpage.c	2014-03-13 23:50:52.480950313 +0800
+@@ -218,6 +218,9 @@
+ 			map_bh->b_size = (last_block-block_in_file) << blkbits;
+ 			if (get_block(inode, block_in_file, map_bh, 0))
+ 				goto confused;
++			/* Lingyu */
++			page->blocknr = map_bh->b_blocknr;
++			/* Lingyu */
+ 			*first_logical_block = block_in_file;
+ 		}
+ 
+diff -uNr linux-3.12.5/fs/trace_bdev.c linux-3.12.5-lynus-modi/fs/trace_bdev.c
+--- linux-3.12.5/fs/trace_bdev.c	1970-01-01 07:00:00.000000000 +0700
++++ linux-3.12.5-lynus-modi/fs/trace_bdev.c	2014-03-13 23:34:29.998129800 +0800
+@@ -0,0 +1,112 @@
++#include <linux/kobject.h>
++#include <linux/string.h>
++#include <linux/sysfs.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/blkdev.h>
++#include <linux/fs.h>
++#include <linux/rwlock.h>
++int has_target_bdev = 0;
++int maj_target_bdev=0,min_target_bdev=0;
++//EXPORT_SYMBOL(has_target_bdev);
++DEFINE_RWLOCK(trace_bdev_lock);
++static char target_name[32];
++
++static ssize_t target_show(struct kobject *kobj, struct kobj_attribute *attr,
++		                          char *buf)
++{
++	ssize_t ret;
++	if (strcmp(attr->attr.name,"major") == 0) {
++		read_lock(&trace_bdev_lock);
++		ret = sprintf(buf,"%d",maj_target_bdev);
++		read_unlock(&trace_bdev_lock);
++		return ret;
++	}
++	else {
++		read_lock(&trace_bdev_lock);
++		ret = sprintf(buf,"%d",min_target_bdev);
++		read_unlock(&trace_bdev_lock);
++		return ret;
++	}
++}
++static ssize_t target_store(struct kobject *kobj, struct kobj_attribute *attr,
++		               const char *buf, size_t count)
++{
++	dev_t bdev_nr;
++	struct block_device *bdev;
++	write_lock(&trace_bdev_lock);
++	if (strcmp(attr->attr.name,"major") == 0)
++		sscanf(buf,"%d",&maj_target_bdev);
++	else
++		sscanf(buf,"%d",&min_target_bdev);
++	write_unlock(&trace_bdev_lock);
++	if (maj_target_bdev !=0 &&min_target_bdev !=0) {
++		bdev_nr=MKDEV(maj_target_bdev,min_target_bdev);
++		//bdev = bdget(bdev_nr);
++		bdev = blkdev_get_by_dev(bdev_nr, FMODE_READ ,&bdev_nr);
++		if (bdev != NULL && bdev->bd_inode != NULL){
++		//	strncpy(target_name,bdev->bd_disk->disk_name,15);
++			printk(KERN_INFO"trace_bdev name:%s\n",bdev->bd_disk->disk_name);
++			write_lock(&trace_bdev_lock);
++			has_target_bdev = 1;
++			write_unlock(&trace_bdev_lock);
++		//	bdput(bdev);
++			blkdev_put(bdev,FMODE_READ);
++		}else
++			printk(KERN_INFO"bdev is null!\n");
++	}
++	return count;
++}
++static ssize_t trace_bdev_show(struct kobject *kobj,struct kobj_attribute *attr,
++		char *buf)
++{
++	read_lock(&trace_bdev_lock);
++	if (has_target_bdev == 1) 
++		return sprintf(buf,"%s",target_name);
++	read_unlock(&trace_bdev_lock);
++	return sprintf(buf,"%s","no device");
++}
++static struct kobj_attribute maj_attr= 
++	__ATTR(major,0666,target_show,target_store);
++static struct kobj_attribute min_attr=
++	__ATTR(minor,0666,target_show,target_store);
++static struct kobj_attribute name_attr=
++	__ATTR_RO(trace_bdev);
++static struct attribute *attrs[]= {
++	&maj_attr.attr,
++	&min_attr.attr,
++	&name_attr.attr,
++	NULL,
++};
++
++static struct attribute_group attr_group = {
++	        .attrs = attrs,
++};
++
++static struct kobject *trace_obj;
++
++static int __init trace_init(void)
++{
++	int ret;
++	trace_obj = kobject_create_and_add("trace_bdev",kernel_kobj);
++	if (!trace_obj)
++		return -ENOMEM;
++	ret = sysfs_create_group(trace_obj,&attr_group);
++	if (ret)
++		kobject_put(trace_obj);
++	rwlock_init(&trace_bdev_lock);
++	printk(KERN_INFO"trace_bdev start!\n");
++	return ret;
++};
++static void __exit trace_exit(void)
++{
++	        kobject_put(trace_obj);
++		maj_target_bdev=min_target_bdev=has_target_bdev=0;
++		printk(KERN_INFO"trace_bdev exit.\n");
++}
++
++module_init(trace_init);
++module_exit(trace_exit);
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Lingyu");
++
+diff -uNr linux-3.12.5/include/linux/mm_types.h linux-3.12.5-lynus-modi/include/linux/mm_types.h
+--- linux-3.12.5/include/linux/mm_types.h	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/include/linux/mm_types.h	2014-03-13 21:59:41.507661044 +0800
+@@ -177,6 +177,7 @@
+ #ifdef LAST_NID_NOT_IN_PAGE_FLAGS
+ 	int _last_nid;
+ #endif
++	sector_t blocknr;
+ }
+ /*
+  * The struct page can be forced to be double word aligned so that atomic ops
+diff -uNr linux-3.12.5/include/trace/events/filemap.h linux-3.12.5-lynus-modi/include/trace/events/filemap.h
+--- linux-3.12.5/include/trace/events/filemap.h	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/include/trace/events/filemap.h	2014-03-13 23:08:48.238259585 +0800
+@@ -52,7 +52,23 @@
+ 	TP_ARGS(page)
+ 	);
+ 
+-#endif /* _TRACE_FILEMAP_H */
+ 
+ /* This part must be outside protection */
++TRACE_EVENT(page_block,
++		TP_PROTO(sector_t blocknr, long size),
++		TP_ARGS(blocknr, size),
++		TP_STRUCT__entry(
++			__field(	sector_t,	bnr)
++			__field(	long,		size)
++		),
++		TP_fast_assign(
++			__entry->bnr = blocknr;
++			__entry->size = size;
++		),
++		TP_printk(
++			"%lu %lu",__entry->bnr, __entry->size
++		)
++);
++
++#endif /* _TRACE_FILEMAP_H */
+ #include <trace/define_trace.h>
+diff -uNr linux-3.12.5/mm/filemap.c linux-3.12.5-lynus-modi/mm/filemap.c
+--- linux-3.12.5/mm/filemap.c	2013-12-12 14:38:07.000000000 +0800
++++ linux-3.12.5-lynus-modi/mm/filemap.c	2014-03-14 00:31:13.256843743 +0800
+@@ -1112,6 +1112,7 @@
+ 	int error;
+ 
+ 	index = *ppos >> PAGE_CACHE_SHIFT;
++	index = index;;
+ 	prev_index = ra->prev_pos >> PAGE_CACHE_SHIFT;
+ 	prev_offset = ra->prev_pos & (PAGE_CACHE_SIZE-1);
+ 	last_index = (*ppos + desc->count + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
+@@ -1320,10 +1321,27 @@
+ {
+ 	char *kaddr;
+ 	unsigned long left, count = desc->count;
+-
++/* Lingyu */
++	extern int maj_target_bdev, min_target_bdev, has_target_bdev;
++	extern rwlock_t trace_bdev_lock;
++	struct address_space *mapping = page->mapping;
++	struct block_device *page_bdev, *target_bdev;
++/* Lingyu */
+ 	if (size > count)
+ 		size = count;
+ 
++/* Lingyu */
++	read_lock(&trace_bdev_lock);
++	if (mapping != NULL && has_target_bdev) {
++		page_bdev = mapping->host->i_sb->s_bdev;
++		target_bdev = bdget(MKDEV(maj_target_bdev, min_target_bdev));
++		if (target_bdev == page_bdev)
++			trace_page_block(page->blocknr, size);
++		bdput(target_bdev);
++	}
++	read_unlock(&trace_bdev_lock);
++/* Lingyu */
++	
+ 	/*
+ 	 * Faults on the destination of a read are common, so do it before
+ 	 * taking the kmap.
