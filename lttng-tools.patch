@@ -1,0 +1,11 @@
+diff -ruN lttng-tools-2.4.0/src/bin/lttng-sessiond/modprobe.c lttng-tools-2.4.0-lynus-modi/src/bin/lttng-sessiond/modprobe.c
+--- lttng-tools-2.4.0/src/bin/lttng-sessiond/modprobe.c	2014-03-01 02:10:24.000000000 +0800
++++ lttng-tools-2.4.0-lynus-modi/src/bin/lttng-sessiond/modprobe.c	2014-07-01 01:42:00.000000000 +0800
+@@ -80,6 +80,7 @@
+ 	{ "lttng-probe-vmscan", 0 },
+ 	{ "lttng-probe-workqueue", 0 },
+ 	{ "lttng-probe-writeback", 0 },
++	{ "lttng-probe-filemap", 0 },
+ };
+ 
+ /*
